@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings#-}
 module IRTS.CodegenErlang (codegenErlang) where
 
 import           Idris.Core.TT
@@ -29,28 +30,28 @@ debugErlang = False
 -- Everything actually happens in `generateErl`. This is just a bit of
 -- glue code.
 codegenErlang :: CodeGenerator
-codegenErlang ci = do let outfile = outputFile ci
-                      eitherEcg <- runErlCodeGen generateErl (defunDecls ci) (exportDecls ci)
-                      case eitherEcg of
-                        Left err -> do putStrLn ("Error: " ++ err)
-                                       exitFailure
-                        Right ecg -> do data_dir <- getDataFileName "irts"
-                                        let erlout = header outfile data_dir
-                                                     ++ exports_section (exports ecg)
-                                                     ++ ["", ""]
-                                                     ++ Map.elems (forms ecg)
-                                        writeFile outfile $ "\n" `intercalate` erlout ++ "\n"
+codegenErlang ci = do
+  let outfile = outputFile ci
+  eitherEcg <- runErlCodeGen generateErl (defunDecls ci) (exportDecls ci)
+  case eitherEcg of
+    Left err -> putStrLn ("Error: " ++ err) >> exitFailure
+    Right ecg -> do
+      data_dir <- getDataFileName "irts"
+      let erlout = header outfile data_dir
+                   ++ exports_section (exports ecg)
+                   ++ ["", ""]
+                   ++ Map.elems (forms ecg)
+      writeFile outfile $ "\n" `intercalate` erlout ++ "\n"
 
-                                        if null (exportDecls ci)
-                                          then do p <- getPermissions outfile
-                                                  setPermissions outfile $ setOwnerExecutable True p
-                                                  return ()
-                                          else return ()
+      if null (exportDecls ci)
+        then do
+          p <- getPermissions outfile
+          setPermissions outfile $ setOwnerExecutable True p
+          return ()
+        else return ()
 
-                                        putStrLn ("Compilation Succeeded: " ++ outfile)
-                                        exitSuccess
-
-
+      putStrLn ("Compilation Succeeded: " ++ outfile)
+      exitSuccess
 
 -- Erlang files have to have a `-module().` annotation that matches
 -- their filename (without the extension). Given we're making this, we
@@ -97,48 +98,57 @@ initECG = ECG { forms = Map.empty
 
 type ErlCG = StateT ErlCodeGen (ExceptT String IO)
 
-runErlCodeGen :: ([(Name, DDecl)] -> [ExportIFace] -> ErlCG ()) -> [(Name,DDecl)] -> [ExportIFace] -> IO (Either String ErlCodeGen)
-runErlCodeGen ecg ddecls eifaces = runExceptT $ execStateT (ecg ddecls eifaces) initECG
+runErlCodeGen :: ([(Name, DDecl)] -> [ExportIFace] -> ErlCG ())
+              -> [(Name,DDecl)]
+              -> [ExportIFace]
+              -> IO (Either String ErlCodeGen)
+runErlCodeGen ecg ddecls eifaces =
+  runExceptT $ execStateT (ecg ddecls eifaces) initECG
 
 emitForm :: (String, Int) -> String -> ErlCG ()
-emitForm fa form = modify (\ecg -> ecg { forms = Map.insert fa form (forms ecg)})
+emitForm fa form =
+  modify (\ecg -> ecg { forms = Map.insert fa form (forms ecg)})
 
 emitExport :: (String, Int) -> ErlCG ()
-emitExport fa = modify (\ecg -> ecg { exports = fa : (exports ecg)})
+emitExport fa =
+  modify (\ecg -> ecg { exports = fa : (exports ecg)})
 
 addRecord :: Name -> Int -> ErlCG ()
-addRecord name arity = do records <- gets records
-                          let records1 = insertBy (comparing fst) (name,arity) records
-                          modify (\ecg -> ecg { records = records1 })
+addRecord name arity = do
+  records <- gets records
+  let records1 = insertBy (comparing fst) (name,arity) records
+  modify (\ecg -> ecg { records = records1 })
 
 -- We want to be able to compare the length of constructor arguments
 -- to the arity of that record constructor, so this returns the
 -- arity. If we can't find the record, then -1 is alright to return,
 -- as no list will have that length.
 recordArity :: Name -> ErlCG Int
-recordArity name = do records <- gets records
-                      case lookup name records of
-                       Just i  -> return i
-                       Nothing -> return (-1)
+recordArity name = do
+  records <- gets records
+  case lookup name records of
+    Just i  -> return i
+    Nothing -> return (-1)
 
 isRecord :: Name -> Int -> ErlCG Bool
-isRecord nm ar = do records <- gets records
-                    case lookup nm records of
-                     Just ar -> return True
-                     _       -> return False
+isRecord nm ar = do
+  records <- gets records
+  case lookup nm records of
+    Just ar -> return True
+    Nothing -> return False
 
 getVar :: LVar -> ErlCG String
 getVar (Glob name) = return $ erlVar name
 getVar (Loc i) = throwError "Local Variables not supported"
 
 getNextCheckedFnName :: String -> Int -> ErlCG String
-getNextCheckedFnName fn arity =
-  do checked <- gets checked_fns
-     case Map.lookup (fn,arity) checked of
-       Nothing -> do modify (\ecg -> ecg { checked_fns = Map.insert (fn,arity) 1 checked })
-                     return . strAtom $ "checked_" ++ fn ++ "_" ++ show 0
-       Just x -> do modify (\ecg -> ecg {checked_fns = Map.update (Just . (+1)) (fn,arity) checked })
-                    return . strAtom $ "checked_" ++ fn ++ "_" ++ show x
+getNextCheckedFnName fn arity = do
+  checked <- gets checked_fns
+  case Map.lookup (fn,arity) checked of
+    Nothing -> do modify (\ecg -> ecg { checked_fns = Map.insert (fn,arity) 1 checked })
+                  return . strAtom $ "checked_" ++ fn ++ "_" ++ show 0
+    Just x -> do modify (\ecg -> ecg {checked_fns = Map.update (Just . (+1)) (fn,arity) checked })
+                 return . strAtom $ "checked_" ++ fn ++ "_" ++ show x
 
 
 {- The Code Generator:
@@ -159,7 +169,7 @@ most constructors.
 More when I realise they're needed.
 -}
 
-generateErl :: [(Name,DDecl)] -> [ExportIFace] -> ErlCG ()
+generateErl :: [(Name, DDecl)] -> [ExportIFace] -> ErlCG ()
 generateErl alldecls exportifaces =
   let (ctors, funs) = (isCtor . snd) `partition` alldecls
   in do mapM_ (\(_,DConstructor name _ arity) -> generateCtor name arity) ctors
@@ -168,7 +178,6 @@ generateErl alldecls exportifaces =
 
   where isCtor (DFun _ _ _) = False
         isCtor (DConstructor _ _ _) = True
-
 
 generateExports :: [ExportIFace] -> ErlCG ()
 generateExports []      = generateMain
